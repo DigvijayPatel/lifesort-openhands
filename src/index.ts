@@ -115,7 +115,7 @@ function escapeHtml(value: string): string {
 }
 
 function safeReturnTo(value: string): string {
-  if (!value.startsWith("/authorize?") || value.startsWith("//") || value.includes("\\") || value.includes("\r") || value.includes("\n")) {
+  if ((value !== "/diagnostics" && !value.startsWith("/authorize?")) || value.startsWith("//") || value.includes("\\") || value.includes("\r") || value.includes("\n")) {
     return "/authorize";
   }
   return value;
@@ -277,7 +277,7 @@ function oauthErrorResponse(error: AuthorizationError): Response {
   return Response.redirect(redirect.toString(), 302);
 }
 
-async function authorizeHandler(request: Request, env: Env): Promise<Response> {
+async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
   if (url.pathname === "/healthz" && request.method === "GET") {
@@ -288,6 +288,90 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
       oauth: "enabled",
       repository: REPOSITORY,
     });
+  }
+
+  if (url.pathname === "/diagnostics" && request.method === "GET") {
+    if (!(await validSession(request, env))) return loginPage("/diagnostics", env);
+
+    const probe = async (method: "server/discover" | "tools/list", id: string) => {
+      const payload = {
+        jsonrpc: "2.0",
+        id,
+        method,
+        params: {
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { name: "LifeSort diagnostics", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      };
+      const probeRequest = new Request(new URL("/mcp", url.origin), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": method,
+        },
+        body: JSON.stringify(payload),
+      });
+      const response = await mcpHandler(probeRequest, env, ctx);
+      const raw = await response.text();
+      let body: any = null;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        const dataLine = raw.split("\n").find((line) => line.startsWith("data: "));
+        if (dataLine) {
+          try { body = JSON.parse(dataLine.slice(6)); } catch { /* non-JSON probe response */ }
+        }
+      }
+      return {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        jsonRpcOk: Boolean(body?.result),
+        errorCode: body?.error?.code ?? null,
+        errorMessage: typeof body?.error?.message === "string" ? body.error.message.slice(0, 300) : null,
+        supportedVersions: Array.isArray(body?.result?.supportedVersions) ? body.result.supportedVersions : undefined,
+        toolNames: Array.isArray(body?.result?.tools)
+          ? body.result.tools.map((tool: any) => String(tool.name)).slice(0, 30)
+          : undefined,
+      };
+    };
+
+    let openHands: Record<string, unknown>;
+    try {
+      const data = await oh(env, "/users/me") as any;
+      const user = data?.user ?? data;
+      openHands = {
+        ok: Boolean(user?.id),
+        accountIdPresent: Boolean(user?.id),
+        namePresent: Boolean(user?.name ?? user?.username),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusMatch = message.match(/OpenHands API (\d{3})/);
+      openHands = {
+        ok: false,
+        httpStatus: statusMatch ? Number(statusMatch[1]) : null,
+        error: message.split(":")[0].slice(0, 160),
+      };
+    }
+
+    const [discovery, toolList] = await Promise.all([
+      probe("server/discover", "lifesort-discover"),
+      probe("tools/list", "lifesort-tools"),
+    ]);
+    return Response.json({
+      checkedAt: new Date().toISOString(),
+      openHandsApi: openHands,
+      mcpDiscovery: discovery,
+      mcpToolList: {
+        ...toolList,
+        toolCount: toolList.toolNames?.length ?? 0,
+      },
+    }, { headers: { "cache-control": "no-store" } });
   }
 
   if (url.pathname === "/login" && request.method === "POST") {
@@ -717,8 +801,8 @@ export default new OAuthProvider<Env>({
   apiRoute: "/mcp",
   apiHandler,
   defaultHandler: {
-    async fetch(request: Request, env: Env): Promise<Response> {
-      return authorizeHandler(request, env);
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+      return authorizeHandler(request, env, ctx);
     },
   },
   authorizeEndpoint: "/authorize",
