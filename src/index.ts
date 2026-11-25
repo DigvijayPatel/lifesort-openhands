@@ -171,7 +171,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
     // Resolve client metadata before creating the one-time consent transaction.
     const details = await provider.describeConsent(oauthRequest);
     const consent = await provider.beginConsent(oauthRequest);
-    const requestedScopes = oauthRequest.scope.filter((scope) => scope === CONTROL_SCOPE);
+    const requestedScopes = oauthRequest.scope.filter((scope) => scope === CONTROL_SCOPE || scope === "offline_access");
     const scopeText = requestedScopes.length ? requestedScopes.map(escapeHtml).join(", ") : CONTROL_SCOPE;
     const body = "<h2>Authorize ChatGPT?</h2><p class=\"muted\">Client: " + escapeHtml(details.clientName ?? "MCP client") + "</p><p class=\"muted\">Redirect destination: " + escapeHtml(details.redirectUriHostname ?? "verified client") + "</p><p>This grants access to OpenHands Cloud for <strong>" + REPOSITORY + "</strong>. ChatGPT can list and inspect conversations, start LifeSort tasks, send follow-up instructions, and pause or resume their sandboxes.</p><p class=\"muted\">Permission requested: " + scopeText + "</p><form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"handle\" value=\"" + escapeHtml(consent.handle) + "\">" + requestedScopes.map((scope) => "<input type=\"hidden\" name=\"scope\" value=\"" + escapeHtml(scope) + "\">").join("") + "<button name=\"decision\" value=\"approve\" type=\"submit\">Approve access</button><button class=\"secondary\" name=\"decision\" value=\"deny\" type=\"submit\">Deny</button></form><p class=\"muted\">You can revoke this connection from ChatGPT's connected-app settings.</p>";
     return page(body, 200, consent.headers);
@@ -208,7 +208,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
         request: approved.request,
         userId: OWNER_ID,
         metadata: { clientName: details.clientName ?? "MCP client" },
-        scope: approved.request.scope.filter((scope) => scope === CONTROL_SCOPE),
+        scope: approved.request.scope.filter((scope) => scope === CONTROL_SCOPE || scope === "offline_access"),
         props: { userId: OWNER_ID, repository: REPOSITORY },
       });
       const headers = new Headers(approved.headers);
@@ -295,6 +295,7 @@ function createServer() {
   const server = new McpServer({ name: "LifeSort OpenHands Control", version: "0.2.0" });
 
   server.registerTool("openhands_account", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Verify the configured OpenHands Cloud API key and show the authenticated account profile. Read-only.",
     inputSchema: {},
   }, async () => {
@@ -310,6 +311,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_list_conversations", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "List recent OpenHands Cloud conversations for DigvijayPatel/LifeSort only. Read-only.",
     inputSchema: { limit: z.number().int().min(1).max(50).default(10) },
   }, async ({ limit }) => {
@@ -328,6 +330,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_start_lifesort_task", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Start a new OpenHands Cloud task in DigvijayPatel/LifeSort. This creates a sandbox and consumes OpenHands resources. Use only when explicitly asked to start work.",
     inputSchema: {
       task: z.string().min(10).max(12000),
@@ -353,6 +356,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_start_task", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Check the asynchronous startup state for an OpenHands task returned by openhands_start_lifesort_task.",
     inputSchema: { start_task_id: z.string().uuid() },
   }, async ({ start_task_id }) => {
@@ -362,6 +366,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_conversation", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Fetch status and metadata for one conversation, restricted to DigvijayPatel/LifeSort. Read-only.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
@@ -371,6 +376,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_send_message", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Send a follow-up instruction to an existing LifeSort OpenHands conversation. The sandbox must be running.",
     inputSchema: {
       conversation_id: z.string().uuid(),
@@ -390,6 +396,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_events", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Read recent execution events for a LifeSort OpenHands conversation. Read-only.",
     inputSchema: {
       conversation_id: z.string().uuid(),
@@ -410,6 +417,7 @@ function createServer() {
   }
 
   server.registerTool("openhands_pause_conversation", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Pause the sandbox for a LifeSort OpenHands conversation. This changes execution state.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
@@ -418,6 +426,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_resume_conversation", {
+    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
     description: "Resume the sandbox for a LifeSort OpenHands conversation. This changes execution state.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
@@ -447,7 +456,7 @@ export default new OAuthProvider<Env>({
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/oauth/token",
   clientRegistrationEndpoint: "/oauth/register",
-  scopesSupported: [CONTROL_SCOPE],
+  scopesSupported: [CONTROL_SCOPE, "offline_access"],
   requiredScopes: [CONTROL_SCOPE],
   clientIdMetadataDocumentEnabled: true,
   resourceMetadata: { resource: "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp" },
