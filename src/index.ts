@@ -295,7 +295,10 @@ function createServer() {
   const server = new McpServer({ name: "LifeSort OpenHands Control", version: "0.2.0" });
 
   server.registerTool("openhands_account", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Verify the configured OpenHands Cloud API key and show the authenticated account profile. Read-only.",
     inputSchema: {},
   }, async () => {
@@ -311,7 +314,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_list_conversations", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "List recent OpenHands Cloud conversations for DigvijayPatel/LifeSort only. Read-only.",
     inputSchema: { limit: z.number().int().min(1).max(50).default(10) },
   }, async ({ limit }) => {
@@ -330,7 +336,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_start_lifesort_task", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Start a new OpenHands Cloud task in DigvijayPatel/LifeSort. This creates a sandbox and consumes OpenHands resources. Use only when explicitly asked to start work.",
     inputSchema: {
       task: z.string().min(10).max(12000),
@@ -356,7 +365,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_start_task", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Check the asynchronous startup state for an OpenHands task returned by openhands_start_lifesort_task.",
     inputSchema: { start_task_id: z.string().uuid() },
   }, async ({ start_task_id }) => {
@@ -366,7 +378,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_conversation", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Fetch status and metadata for one conversation, restricted to DigvijayPatel/LifeSort. Read-only.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
@@ -376,7 +391,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_send_message", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Send a follow-up instruction to an existing LifeSort OpenHands conversation. The sandbox must be running.",
     inputSchema: {
       conversation_id: z.string().uuid(),
@@ -396,7 +414,10 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_events", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Read recent execution events for a LifeSort OpenHands conversation. Read-only.",
     inputSchema: {
       conversation_id: z.string().uuid(),
@@ -417,7 +438,10 @@ function createServer() {
   }
 
   server.registerTool("openhands_pause_conversation", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Pause the sandbox for a LifeSort OpenHands conversation. This changes execution state.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
@@ -426,12 +450,31 @@ function createServer() {
   });
 
   server.registerTool("openhands_resume_conversation", {
-    securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+    scopeChallenge: ({ authInfo }) =>
+      authInfo?.scopes.includes(CONTROL_SCOPE)
+        ? undefined
+        : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Resume the sandbox for a LifeSort OpenHands conversation. This changes execution state.",
     inputSchema: { conversation_id: z.string().uuid() },
   }, async ({ conversation_id }) => {
     assertOwner();
     return jsonText(await sandboxAction(conversation_id, "resume"));
+  });
+
+  // Emit OpenAI's per-tool OAuth metadata at the MCP wire boundary.
+  // The installed MCP SDK exposes scopeChallenge but not securitySchemes in
+  // registerTool's config type, so add the OpenAI extension to tools/list here.
+  server.server.use("tools/list", async (request, context, next) => {
+    const result = await next(request, context);
+    const listing = result as unknown as { tools?: Array<Record<string, unknown>> };
+    if (!Array.isArray(listing?.tools)) return result;
+    return {
+      ...listing,
+      tools: listing.tools.map((tool) => ({
+        ...tool,
+        securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+      })),
+    } as typeof result;
   });
 
   return server;
@@ -457,7 +500,6 @@ export default new OAuthProvider<Env>({
   tokenEndpoint: "/oauth/token",
   clientRegistrationEndpoint: "/oauth/register",
   scopesSupported: [CONTROL_SCOPE, "offline_access"],
-  requiredScopes: [CONTROL_SCOPE],
   clientIdMetadataDocumentEnabled: true,
   resourceMetadata: { resource: "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp" },
 });
