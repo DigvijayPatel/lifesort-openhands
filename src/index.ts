@@ -99,28 +99,87 @@ async function validSession(request: Request, env: Env): Promise<boolean> {
   return difference === 0;
 }
 
-async function createCsrfToken(env: Env, purpose: "login" | "authorize"): Promise<string> {
-  const expiry = String(Date.now() + 15 * 60 * 1000);
-  const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  const payload = purpose + "." + expiry + "." + nonce;
-  return expiry + "." + nonce + "." + await sign(payload, env.SESSION_SIGNING_SECRET);
+interface ConsentCookieBinding {
+  name: string;
+  value: string;
 }
 
-async function validCsrfToken(token: string, purpose: "login" | "authorize", env: Env): Promise<boolean> {
+interface CsrfValidation {
+  valid: boolean;
+  binding?: ConsentCookieBinding;
+}
+
+async function createCsrfToken(
+  env: Env,
+  purpose: "login" | "authorize",
+  binding?: ConsentCookieBinding
+): Promise<string> {
+  const expiry = String(Date.now() + 15 * 60 * 1000);
+  const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
+  const encodedBinding = binding
+    ? b64url(new TextEncoder().encode(binding.name + "=" + binding.value))
+    : "-";
+  const payload = purpose + "." + expiry + "." + nonce + "." + encodedBinding;
+  return expiry + "." + nonce + "." + encodedBinding + "." + await sign(payload, env.SESSION_SIGNING_SECRET);
+}
+
+async function validCsrfToken(
+  token: string,
+  purpose: "login" | "authorize",
+  env: Env
+): Promise<CsrfValidation> {
   const parts = token.split(".");
   const expiry = parts[0];
   const nonce = parts[1];
-  const signature = parts[2];
-  if (!expiry || !nonce || !signature || !/^\d+$/.test(expiry)) return false;
+  const encodedBinding = parts[2];
+  const signature = parts[3];
+  if (!expiry || !nonce || !encodedBinding || !signature || !/^\\d+$/.test(expiry)) {
+    return { valid: false };
+  }
   const expiresAt = Number(expiry);
-  if (expiresAt < Date.now() || expiresAt > Date.now() + 16 * 60 * 1000) return false;
-  const expected = await sign(purpose + "." + expiry + "." + nonce, env.SESSION_SIGNING_SECRET);
+  if (expiresAt < Date.now() || expiresAt > Date.now() + 16 * 60 * 1000) {
+    return { valid: false };
+  }
+  const payload = purpose + "." + expiry + "." + nonce + "." + encodedBinding;
+  const expected = await sign(payload, env.SESSION_SIGNING_SECRET);
   const a = new TextEncoder().encode(signature);
   const b = new TextEncoder().encode(expected);
-  if (a.length !== b.length) return false;
+  if (a.length !== b.length) return { valid: false };
   let difference = 0;
   for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
-  return difference === 0;
+  if (difference !== 0) return { valid: false };
+
+  if (encodedBinding === "-") return { valid: true };
+  try {
+    const normalized = encodedBinding.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = new TextDecoder().decode(Uint8Array.from(
+      atob(normalized + "=".repeat((4 - normalized.length % 4) % 4)),
+      (char) => char.charCodeAt(0),
+    ));
+    const separator = decoded.indexOf("=");
+    if (separator <= 0) return { valid: false };
+    const name = decoded.slice(0, separator);
+    const value = decoded.slice(separator + 1);
+    if (!/^__Host-[A-Za-z0-9_-]+$/.test(name) || !/^[a-f0-9]{64}$/.test(value)) {
+      return { valid: false };
+    }
+    return { valid: true, binding: { name, value } };
+  } catch {
+    return { valid: false };
+  }
+}
+
+function withConsentCookie(request: Request, binding: ConsentCookieBinding): Request {
+  const headers = new Headers(request.headers);
+  const current = headers.get("cookie") ?? "";
+  const existingNames = current.split(";").map((part) => {
+    const separator = part.indexOf("=");
+    return (separator < 0 ? part : part.slice(0, separator)).trim();
+  });
+  if (!existingNames.includes(binding.name)) {
+    headers.set("cookie", current ? current + "; " + binding.name + "=" + binding.value : binding.name + "=" + binding.value);
+  }
+  return new Request(request.url, { method: request.method, headers });
 }
 
 async function createSession(env: Env): Promise<string> {
@@ -161,7 +220,8 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === "/login" && request.method === "POST") {
     const form = await request.formData();
-    if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "login", env))) {
+    const csrf = await validCsrfToken(String(form.get("_csrf") ?? ""), "login", env);
+    if (!csrf.valid) {
       return page("<h2>Login form expired</h2><p class=\"muted\">Refresh the authorization page and try again.</p>", 403);
     }
     const password = String(form.get("password") ?? "");
@@ -201,7 +261,15 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
     // Resolve client metadata before creating the one-time consent transaction.
     const details = await provider.describeConsent(oauthRequest);
     const consent = await provider.beginConsent(oauthRequest);
-    const csrfToken = await createCsrfToken(env, "authorize");
+    const setCookie = consent.headers.get("set-cookie") ?? "";
+    const cookiePair = setCookie.split(";", 1)[0];
+    const cookieSeparator = cookiePair.indexOf("=");
+    if (cookieSeparator <= 0) throw new Error("OAuth provider did not create a consent binding cookie.");
+    const binding = {
+      name: cookiePair.slice(0, cookieSeparator).trim(),
+      value: cookiePair.slice(cookieSeparator + 1).trim(),
+    };
+    const csrfToken = await createCsrfToken(env, "authorize", binding);
     const requestedScopes = oauthRequest.scope.filter((scope) => scope === CONTROL_SCOPE || scope === "offline_access");
     const scopeText = requestedScopes.length ? requestedScopes.map(escapeHtml).join(", ") : CONTROL_SCOPE;
     const body = "<h2>Authorize ChatGPT?</h2><p class=\"muted\">Client: " + escapeHtml(details.clientName ?? "MCP client") + "</p><p class=\"muted\">Redirect destination: " + escapeHtml(details.redirectUriHostname ?? "verified client") + "</p><p>This grants access to OpenHands Cloud for <strong>" + REPOSITORY + "</strong>. ChatGPT can list and inspect conversations, start LifeSort tasks, send follow-up instructions, and pause or resume their sandboxes.</p><p class=\"muted\">Permission requested: " + scopeText + "</p><form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"_csrf\" value=\"" + escapeHtml(csrfToken) + "\"><input type=\"hidden\" name=\"handle\" value=\"" + escapeHtml(consent.handle) + "\">" + requestedScopes.map((scope) => "<input type=\"hidden\" name=\"scope\" value=\"" + escapeHtml(scope) + "\">").join("") + "<button name=\"decision\" value=\"approve\" type=\"submit\">Approve access</button><button class=\"secondary\" name=\"decision\" value=\"deny\" type=\"submit\">Deny</button></form><p class=\"muted\">You can revoke this connection from ChatGPT's connected-app settings.</p>";
@@ -214,15 +282,17 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
     }
 
     const form = await request.formData();
-    if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "authorize", env))) {
+    const csrf = await validCsrfToken(String(form.get("_csrf") ?? ""), "authorize", env);
+    if (!csrf.valid || !csrf.binding) {
       return page("<h2>Authorization form expired</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 403);
     }
+    const providerRequest = withConsentCookie(request, csrf.binding);
     const handle = String(form.get("handle") ?? "");
     if (!handle) return page("<h2>Authorization expired</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 400);
 
     if (String(form.get("decision") ?? "") !== "approve") {
       try {
-        const denied = await provider.denyConsent(request, handle);
+        const denied = await provider.denyConsent(providerRequest, handle);
         return new Response(null, { status: 302, headers: denied.headers });
       } catch (error) {
         if (error instanceof AuthorizationError) return oauthErrorResponse(error);
@@ -233,7 +303,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
     try {
       // The single-use handle retrieves the validated OAuth request from KV.
       // Do not re-parse the POST URL: it intentionally has no OAuth query string.
-      const approved = await provider.approveConsent(request, handle, {
+      const approved = await provider.approveConsent(providerRequest, handle, {
         scope: form.getAll("scope").map(String),
       });
       const details = await provider.describeConsent(approved.request);
