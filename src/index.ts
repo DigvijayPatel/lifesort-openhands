@@ -396,6 +396,7 @@ async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContex
         accept: "application/json",
         "mcp-protocol-version": "2026-07-28",
         "mcp-method": "tools/call",
+        "mcp-name": "openhands_account",
       },
       body: JSON.stringify(callPayload),
     });
