@@ -38,7 +38,10 @@ const CONTROL_SCOPE = "openhands:control";
 const MAX_EVENTS = 100;
 
 function page(body: string, status = 200, extraHeaders?: HeadersInit): Response {
-  const headers = new Headers(extraHeaders);
+  // Keep OAuth provider headers intact. In particular, beginConsent() returns a
+  // browser-binding Set-Cookie header; cloning Headers can coalesce Set-Cookie
+  // values on some runtimes and strip the consent cookie from the response.
+  const headers = extraHeaders instanceof Headers ? extraHeaders : new Headers(extraHeaders);
   headers.set("content-type", "text/html; charset=utf-8");
   headers.set("cache-control", "no-store");
   headers.set("x-content-type-options", "nosniff");
