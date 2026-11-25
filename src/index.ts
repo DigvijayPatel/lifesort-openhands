@@ -133,7 +133,7 @@ async function validCsrfToken(
   const nonce = parts[1];
   const encodedBinding = parts[2];
   const signature = parts[3];
-  if (!expiry || !nonce || !encodedBinding || !signature || !/^\\d+$/.test(expiry)) {
+  if (!expiry || !nonce || !encodedBinding || !signature || !/^\d+$/.test(expiry)) {
     return { valid: false };
   }
   const expiresAt = Number(expiry);
@@ -172,13 +172,13 @@ async function validCsrfToken(
 function withConsentCookie(request: Request, binding: ConsentCookieBinding): Request {
   const headers = new Headers(request.headers);
   const current = headers.get("cookie") ?? "";
-  const existingNames = current.split(";").map((part) => {
+  const retained = current.split(";").map((part) => part.trim()).filter((part) => {
     const separator = part.indexOf("=");
-    return (separator < 0 ? part : part.slice(0, separator)).trim();
+    const name = (separator < 0 ? part : part.slice(0, separator)).trim();
+    return name !== binding.name;
   });
-  if (!existingNames.includes(binding.name)) {
-    headers.set("cookie", current ? current + "; " + binding.name + "=" + binding.value : binding.name + "=" + binding.value);
-  }
+  retained.push(binding.name + "=" + binding.value);
+  headers.set("cookie", retained.join("; "));
   return new Request(request.url, { method: request.method, headers });
 }
 
