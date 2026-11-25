@@ -96,13 +96,38 @@ async function validSession(request: Request, env: Env): Promise<boolean> {
   return difference === 0;
 }
 
+async function createCsrfToken(env: Env, purpose: "login" | "authorize"): Promise<string> {
+  const expiry = String(Date.now() + 15 * 60 * 1000);
+  const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
+  const payload = purpose + "." + expiry + "." + nonce;
+  return expiry + "." + nonce + "." + await sign(payload, env.SESSION_SIGNING_SECRET);
+}
+
+async function validCsrfToken(token: string, purpose: "login" | "authorize", env: Env): Promise<boolean> {
+  const parts = token.split(".");
+  const expiry = parts[0];
+  const nonce = parts[1];
+  const signature = parts[2];
+  if (!expiry || !nonce || !signature || !/^\\d+$/.test(expiry)) return false;
+  const expiresAt = Number(expiry);
+  if (expiresAt < Date.now() || expiresAt > Date.now() + 16 * 60 * 1000) return false;
+  const expected = await sign(purpose + "." + expiry + "." + nonce, env.SESSION_SIGNING_SECRET);
+  const a = new TextEncoder().encode(signature);
+  const b = new TextEncoder().encode(expected);
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
+  return difference === 0;
+}
+
 async function createSession(env: Env): Promise<string> {
   const expiry = String(Date.now() + 8 * 60 * 60 * 1000);
   return expiry + "." + await sign(expiry, env.SESSION_SIGNING_SECRET);
 }
 
-function loginPage(returnTo: string, status = 200): Response {
-  const body = "<h2>LifeSort OpenHands Control</h2><p class=\"muted\">Sign in to authorize ChatGPT to access your OpenHands account for <strong>" + REPOSITORY + "</strong>.</p><form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"return_to\" value=\"" + escapeHtml(returnTo) + "\"><label for=\"password\">Bridge password</label><input id=\"password\" name=\"password\" type=\"password\" required autocomplete=\"current-password\"><button type=\"submit\">Continue</button></form>";
+async function loginPage(returnTo: string, env: Env, status = 200): Promise<Response> {
+  const csrfToken = await createCsrfToken(env, "login");
+  const body = "<h2>LifeSort OpenHands Control</h2><p class=\\"muted\\">Sign in to authorize ChatGPT to access your OpenHands account for <strong>" + REPOSITORY + "</strong>.</p><form method=\\"post\\" action=\\"/login\\"><input type=\\"hidden\\" name=\\"_csrf\\" value=\\"" + escapeHtml(csrfToken) + "\\"><input type=\\"hidden\\" name=\\"return_to\\" value=\\"" + escapeHtml(returnTo) + "\\"><label for=\\"password\\">Bridge password</label><input id=\\"password\\" name=\\"password\\" type=\\"password\\" required autocomplete=\\"current-password\\"><button type=\\"submit\\">Continue</button></form>";
   return page(body, status);
 }
 
@@ -132,8 +157,10 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
   }
 
   if (url.pathname === "/login" && request.method === "POST") {
-    if (!sameOrigin(request)) return page("<h2>Request rejected</h2>", 403);
     const form = await request.formData();
+    if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "login", env))) {
+      return page("<h2>Login form expired</h2><p class=\\"muted\\">Refresh the authorization page and try again.</p>", 403);
+    }
     const password = String(form.get("password") ?? "");
     const returnTo = safeReturnTo(String(form.get("return_to") ?? "/authorize"));
     const supplied = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(password)));
@@ -166,11 +193,12 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
       throw error;
     }
 
-    if (!(await validSession(request, env))) return loginPage(safeReturnTo(url.pathname + url.search));
+    if (!(await validSession(request, env))) return loginPage(safeReturnTo(url.pathname + url.search), env);
 
     // Resolve client metadata before creating the one-time consent transaction.
     const details = await provider.describeConsent(oauthRequest);
     const consent = await provider.beginConsent(oauthRequest);
+    const csrfToken = await createCsrfToken(env, "authorize");
     const requestedScopes = oauthRequest.scope.filter((scope) => scope === CONTROL_SCOPE || scope === "offline_access");
     const scopeText = requestedScopes.length ? requestedScopes.map(escapeHtml).join(", ") : CONTROL_SCOPE;
     const body = "<h2>Authorize ChatGPT?</h2><p class=\"muted\">Client: " + escapeHtml(details.clientName ?? "MCP client") + "</p><p class=\"muted\">Redirect destination: " + escapeHtml(details.redirectUriHostname ?? "verified client") + "</p><p>This grants access to OpenHands Cloud for <strong>" + REPOSITORY + "</strong>. ChatGPT can list and inspect conversations, start LifeSort tasks, send follow-up instructions, and pause or resume their sandboxes.</p><p class=\"muted\">Permission requested: " + scopeText + "</p><form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"handle\" value=\"" + escapeHtml(consent.handle) + "\">" + requestedScopes.map((scope) => "<input type=\"hidden\" name=\"scope\" value=\"" + escapeHtml(scope) + "\">").join("") + "<button name=\"decision\" value=\"approve\" type=\"submit\">Approve access</button><button class=\"secondary\" name=\"decision\" value=\"deny\" type=\"submit\">Deny</button></form><p class=\"muted\">You can revoke this connection from ChatGPT's connected-app settings.</p>";
@@ -178,12 +206,14 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === "POST") {
-    if (!sameOrigin(request)) return page("<h2>Request rejected</h2>", 403);
     if (!(await validSession(request, env))) {
       return page("<h2>Session expired</h2><p class=\"muted\">Restart the connection from ChatGPT to begin a fresh authorization request.</p>", 401);
     }
 
     const form = await request.formData();
+    if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "authorize", env))) {
+      return page("<h2>Authorization form expired</h2><p class=\\"muted\\">Restart the connection from ChatGPT.</p>", 403);
+    }
     const handle = String(form.get("handle") ?? "");
     if (!handle) return page("<h2>Authorization expired</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 400);
 
