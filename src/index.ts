@@ -169,11 +169,17 @@ function createServer(env: Env) {
   return server;
 }
 
-const mcpHandler = (request: Request, env: Env, ctx: ExecutionContext) => createMcpHandler(() => createServer(env))(request, env, ctx);
+const mcpHandler = createMcpHandler((env: Env) => createServer(env));
+
+const apiHandler = {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return mcpHandler(request, env, ctx);
+  }
+};
 
 export default new OAuthProvider<Env>({
   apiRoute: "/mcp",
-  apiHandler: mcpHandler,
+  apiHandler,
   defaultHandler: async (request, env) => authorizeHandler(request, env),
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/oauth/token",
