@@ -309,6 +309,7 @@ async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContex
       const probeRequest = new Request(new URL("/mcp", url.origin), {
         method: "POST",
         headers: {
+          host: url.host,
           "content-type": "application/json",
           accept: "application/json",
           "mcp-protocol-version": "2026-07-28",
