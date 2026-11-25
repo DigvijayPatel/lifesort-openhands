@@ -1,0 +1,22 @@
+{
+  "name": "lifesort-openhands-control",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "agents": "^0.7.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.50.0",
+    "@cloudflare/workers-types": "^4.20261126.0"
+  }
+}
