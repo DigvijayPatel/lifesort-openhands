@@ -700,7 +700,12 @@ function createServer() {
   return server;
 }
 
-const mcpHandler = createMcpHandler(createServer);
+const mcpHandler = createMcpHandler(createServer, {
+  onerror: (error) => {
+    // Record handler exceptions without logging request bodies, authorization headers, or tokens.
+    console.error("[lifesort-mcp-handler]", error.name, error.message, error.stack ?? "");
+  },
+});
 
 const apiHandler = {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
