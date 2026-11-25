@@ -27,7 +27,6 @@ interface Env {
   OPENHANDS_CLOUD_API_KEY: string;
   BRIDGE_LOGIN_PASSWORD: string;
   SESSION_SIGNING_SECRET: string;
-  MCP_RESOURCE: string;
 }
 
 const REPOSITORY = "DigvijayPatel/LifeSort";
@@ -451,5 +450,5 @@ export default new OAuthProvider<Env>({
   scopesSupported: [CONTROL_SCOPE],
   requiredScopes: [CONTROL_SCOPE],
   clientIdMetadataDocumentEnabled: true,
-  resourceMetadata: { resource: workerEnv.MCP_RESOURCE },
+  resourceMetadata: { resource: "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp" },
 });
