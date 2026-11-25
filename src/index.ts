@@ -6,7 +6,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
-import { env as workerEnv } from "cloudflare:workers";
+import { DurableObject, env as workerEnv } from "cloudflare:workers";
 
 interface Env {
   OAUTH_KV: KVNamespace;
@@ -27,6 +27,7 @@ interface Env {
   OPENHANDS_CLOUD_API_KEY: string;
   BRIDGE_LOGIN_PASSWORD: string;
   SESSION_SIGNING_SECRET: string;
+  CONSENT_COORDINATOR: DurableObjectNamespace<OAuthConsentCoordinator>;
 }
 
 const REPOSITORY = "DigvijayPatel/LifeSort";
@@ -36,6 +37,62 @@ const OPENHANDS_WEB_BASE = "https://app.all-hands.dev";
 const SESSION_COOKIE = "__Host-LIFESORT_SESSION";
 const CONTROL_SCOPE = "openhands:control";
 const MAX_EVENTS = 100;
+
+interface ConsentReplayRecord {
+  status: "processing" | "complete" | "failed";
+  expiresAt: number;
+  redirectTo?: string;
+}
+
+type ConsentReplayResult = {
+  status: "claimed" | "processing" | "complete" | "failed";
+  redirectTo?: string;
+};
+
+// Serializes one-time consent approvals and remembers the resulting redirect briefly.
+// ChatGPT/browser clients can submit the same consent form twice; OAuth handles remain
+// single-use, so the second POST must reuse the first result rather than surface a false expiry.
+export class OAuthConsentCoordinator extends DurableObject {
+  async claim(key: string): Promise<ConsentReplayResult> {
+    const storageKey = "consent:" + key;
+    return this.ctx.storage.transaction(async (txn) => {
+      const existing = await txn.get<ConsentReplayRecord>(storageKey);
+      const now = Date.now();
+      if (existing && existing.expiresAt > now) {
+        return {
+          status: existing.status,
+          ...(existing.redirectTo ? { redirectTo: existing.redirectTo } : {}),
+        };
+      }
+      await txn.put(storageKey, { status: "processing", expiresAt: now + 15 * 60 * 1000 });
+      return { status: "claimed" };
+    });
+  }
+
+  async getStatus(key: string): Promise<ConsentReplayResult> {
+    const existing = await this.ctx.storage.get<ConsentReplayRecord>("consent:" + key);
+    if (!existing || existing.expiresAt <= Date.now()) return { status: "failed" };
+    return {
+      status: existing.status,
+      ...(existing.redirectTo ? { redirectTo: existing.redirectTo } : {}),
+    };
+  }
+
+  async complete(key: string, redirectTo: string): Promise<void> {
+    await this.ctx.storage.put("consent:" + key, {
+      status: "complete",
+      redirectTo,
+      expiresAt: Date.now() + 3 * 60 * 1000,
+    } satisfies ConsentReplayRecord);
+  }
+
+  async fail(key: string): Promise<void> {
+    await this.ctx.storage.put("consent:" + key, {
+      status: "failed",
+      expiresAt: Date.now() + 60 * 1000,
+    } satisfies ConsentReplayRecord);
+  }
+}
 
 function page(body: string, status = 200, extraHeaders?: HeadersInit): Response {
   // Keep OAuth provider headers intact. In particular, beginConsent() returns a
@@ -182,6 +239,20 @@ function withConsentCookie(request: Request, binding: ConsentCookieBinding): Req
   return new Request(request.url, { method: request.method, headers });
 }
 
+async function consentHandleKey(handle: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(handle));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function replayConsentRedirect(redirectTo: string, cookieName: string): Response {
+  const headers = new Headers({
+    location: redirectTo,
+    "cache-control": "no-store",
+    "set-cookie": cookieName + "=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+  });
+  return new Response(null, { status: 302, headers });
+}
+
 async function createSession(env: Env): Promise<string> {
   const expiry = String(Date.now() + 8 * 60 * 60 * 1000);
   return expiry + "." + await sign(expiry, env.SESSION_SIGNING_SECRET);
@@ -300,6 +371,29 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
       }
     }
 
+    // Use a strongly consistent Durable Object to collapse duplicate POSTs for the
+    // same one-time handle. Workers KV remains the OAuth provider's transaction store.
+    const replayKey = await consentHandleKey(handle);
+    const coordinator = env.CONSENT_COORDINATOR.getByName("lifesort-oauth-consent-replay");
+    const claim = await coordinator.claim(replayKey);
+    if (claim.status === "complete" && claim.redirectTo) {
+      return replayConsentRedirect(claim.redirectTo, csrf.binding.name);
+    }
+    if (claim.status === "processing") {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const status = await coordinator.getStatus(replayKey);
+        if (status.status === "complete" && status.redirectTo) {
+          return replayConsentRedirect(status.redirectTo, csrf.binding.name);
+        }
+        if (status.status === "failed") break;
+      }
+      return page("<h2>Approval is already being processed</h2><p class=\"muted\">Return to ChatGPT. Do not submit this approval again.</p>", 202);
+    }
+    if (claim.status !== "claimed") {
+      return page("<h2>Authorization could not be completed</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 409);
+    }
+
     try {
       // The single-use handle retrieves the validated OAuth request from KV.
       // Do not re-parse the POST URL: it intentionally has no OAuth query string.
@@ -314,11 +408,13 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
         scope: approved.request.scope.filter((scope) => scope === CONTROL_SCOPE || scope === "offline_access"),
         props: { userId: OWNER_ID, repository: REPOSITORY },
       });
+      await coordinator.complete(replayKey, completed.redirectTo);
       const headers = new Headers(approved.headers);
       headers.set("location", completed.redirectTo);
       headers.set("cache-control", "no-store");
       return new Response(null, { status: 302, headers });
     } catch (error) {
+      try { await coordinator.fail(replayKey); } catch { /* preserve the original OAuth error */ }
       if (error instanceof AuthorizationError) return oauthErrorResponse(error);
       throw error;
     }
