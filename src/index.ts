@@ -489,7 +489,20 @@ function conversationSummary(item: any) {
 
 function createServer() {
   const env = workerEnv as unknown as Env;
-  const server = new McpServer({ name: "LifeSort OpenHands Control", version: "0.2.0" });
+  const server = new McpServer(
+    { name: "LifeSort OpenHands Control", version: "0.2.0" },
+    {
+      // ChatGPT probes modern MCP servers with server/discover (2026-07-28).
+      // Keep the released 2025 revisions too for older Streamable HTTP clients.
+      supportedProtocolVersions: [
+        "2026-07-28",
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26",
+        "2024-11-05",
+      ],
+    },
+  );
 
   server.registerTool("openhands_account", {
     scopeChallenge: ({ authInfo }) =>
