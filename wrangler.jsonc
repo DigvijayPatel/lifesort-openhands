@@ -11,5 +11,8 @@
       "binding": "OAUTH_KV",
       "id": "7a43344a18b14e4b8b5f8f04d353ab84"
     }
-  ]
+  ],
+  "vars": {
+    "MCP_RESOURCE": "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp"
+  }
 }
