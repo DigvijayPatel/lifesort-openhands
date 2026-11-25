@@ -364,6 +364,56 @@ async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContex
       probe("server/discover", "lifesort-discover"),
       probe("tools/list", "lifesort-tools"),
     ]);
+
+    // Exercise the actual registered read-only account tool through tools/call.
+    // This diagnostic is protected by the bridge login and uses an internal
+    // owner context; it does not mint or expose a user OAuth token.
+    const diagnosticHandler = createMcpHandler(createServer, {
+      authContext: { props: { userId: OWNER_ID, repository: REPOSITORY } },
+      onerror: (error) => {
+        console.error("[lifesort-diagnostic-tool]", error.name, error.message);
+      },
+    });
+    const callPayload = {
+      jsonrpc: "2.0",
+      id: "lifesort-account-tool-test",
+      method: "tools/call",
+      params: {
+        name: "openhands_account",
+        arguments: {},
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": { name: "LifeSort diagnostics", version: "1.0.0" },
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      },
+    };
+    const callRequest = new Request(new URL("/mcp", url.origin), {
+      method: "POST",
+      headers: {
+        host: url.host,
+        "content-type": "application/json",
+        accept: "application/json",
+        "mcp-protocol-version": "2026-07-28",
+        "mcp-method": "tools/call",
+      },
+      body: JSON.stringify(callPayload),
+    });
+    const callResponse = await diagnosticHandler.fetch(callRequest, {
+      authInfo: {
+        token: "internal-diagnostic-only",
+        clientId: "lifesort-diagnostics",
+        scopes: [CONTROL_SCOPE, "offline_access"],
+      } as any,
+    });
+    const callRaw = await callResponse.text();
+    let callBody: any = null;
+    try { callBody = JSON.parse(callRaw); } catch { /* ignore non-JSON response */ }
+    const callResult = callBody?.result;
+    const callStructured = callResult?.structuredContent;
+    const callText = Array.isArray(callResult?.content)
+      ? callResult.content.find((item: any) => item?.type === "text")?.text
+      : undefined;
     return Response.json({
       checkedAt: new Date().toISOString(),
       openHandsApi: openHands,
@@ -371,6 +421,15 @@ async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContex
       mcpToolList: {
         ...toolList,
         toolCount: toolList.toolNames?.length ?? 0,
+      },
+      openHandsAccountToolCall: {
+        httpStatus: callResponse.status,
+        jsonRpcOk: Boolean(callResult && !callResult.isError),
+        toolReportedError: Boolean(callResult?.isError),
+        profileIdPresent: typeof callStructured?.id === "string" && callStructured.id.length > 0,
+        profileNamePresent: typeof callStructured?.name === "string" && callStructured.name.length > 0,
+        textResultPresent: typeof callText === "string" && callText.length > 0,
+        errorMessage: typeof callBody?.error?.message === "string" ? callBody.error.message.slice(0, 300) : null,
       },
     }, { headers: { "cache-control": "no-store" } });
   }
@@ -590,23 +649,35 @@ function createServer() {
   );
 
   server.registerTool("openhands_account", {
-    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
+    _meta: {
+      securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
+      "openai/profile": true,
+    },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
         : { scopes: [CONTROL_SCOPE], errorDescription: "Connect your OpenHands account to use this tool." },
     description: "Verify the configured OpenHands Cloud API key and show the authenticated account profile. Read-only.",
     inputSchema: {},
+    outputSchema: z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      email: z.string().optional(),
+    }),
   }, async () => {
     assertOwner();
     const data = await oh(env, "/users/me") as any;
     const user = data?.user ?? data;
-    return jsonText({
-      authenticated: true,
-      id: user?.id ?? null,
-      name: user?.name ?? user?.username ?? null,
-      email: user?.email ?? null,
-    });
+    const profile = {
+      id: String(user?.id ?? ""),
+      name: String(user?.name ?? user?.username ?? "OpenHands account"),
+      ...(typeof user?.email === "string" && user.email ? { email: user.email } : {}),
+    };
+    if (!profile.id) throw new Error("OpenHands did not return a stable account ID.");
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(profile) }],
+      structuredContent: profile,
+    };
   });
 
   server.registerTool("openhands_list_conversations", {
