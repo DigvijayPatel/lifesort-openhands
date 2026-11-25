@@ -15,5 +15,21 @@
   ],
   "vars": {
     "MCP_RESOURCE": "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp"
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONSENT_COORDINATOR",
+        "class_name": "OAuthConsentCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OAuthConsentCoordinator"
+      ]
+    }
+  ]
 }
