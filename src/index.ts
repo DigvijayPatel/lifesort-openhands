@@ -180,7 +180,11 @@ const apiHandler = {
 export default new OAuthProvider<Env>({
   apiRoute: "/mcp",
   apiHandler,
-  defaultHandler: async (request, env) => authorizeHandler(request, env),
+  defaultHandler: {
+    async fetch(request: Request, env: Env): Promise<Response> {
+      return authorizeHandler(request, env);
+    }
+  },
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/oauth/token",
   clientRegistrationEndpoint: "/oauth/register",
