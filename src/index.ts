@@ -127,7 +127,7 @@ async function createSession(env: Env): Promise<string> {
 
 async function loginPage(returnTo: string, env: Env, status = 200): Promise<Response> {
   const csrfToken = await createCsrfToken(env, "login");
-  const body = "<h2>LifeSort OpenHands Control</h2><p class=\\"muted\\">Sign in to authorize ChatGPT to access your OpenHands account for <strong>" + REPOSITORY + "</strong>.</p><form method=\\"post\\" action=\\"/login\\"><input type=\\"hidden\\" name=\\"_csrf\\" value=\\"" + escapeHtml(csrfToken) + "\\"><input type=\\"hidden\\" name=\\"return_to\\" value=\\"" + escapeHtml(returnTo) + "\\"><label for=\\"password\\">Bridge password</label><input id=\\"password\\" name=\\"password\\" type=\\"password\\" required autocomplete=\\"current-password\\"><button type=\\"submit\\">Continue</button></form>";
+  const body = "<h2>LifeSort OpenHands Control</h2><p class=\"muted\">Sign in to authorize ChatGPT to access your OpenHands account for <strong>" + REPOSITORY + "</strong>.</p><form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"_csrf\" value=\"" + escapeHtml(csrfToken) + "\"><input type=\"hidden\" name=\"return_to\" value=\"" + escapeHtml(returnTo) + "\"><label for=\"password\">Bridge password</label><input id=\"password\" name=\"password\" type=\"password\" required autocomplete=\"current-password\"><button type=\"submit\">Continue</button></form>";
   return page(body, status);
 }
 
@@ -159,7 +159,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
   if (url.pathname === "/login" && request.method === "POST") {
     const form = await request.formData();
     if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "login", env))) {
-      return page("<h2>Login form expired</h2><p class=\\"muted\\">Refresh the authorization page and try again.</p>", 403);
+      return page("<h2>Login form expired</h2><p class=\"muted\">Refresh the authorization page and try again.</p>", 403);
     }
     const password = String(form.get("password") ?? "");
     const returnTo = safeReturnTo(String(form.get("return_to") ?? "/authorize"));
@@ -212,7 +212,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
 
     const form = await request.formData();
     if (!(await validCsrfToken(String(form.get("_csrf") ?? ""), "authorize", env))) {
-      return page("<h2>Authorization form expired</h2><p class=\\"muted\\">Restart the connection from ChatGPT.</p>", 403);
+      return page("<h2>Authorization form expired</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 403);
     }
     const handle = String(form.get("handle") ?? "");
     if (!handle) return page("<h2>Authorization expired</h2><p class=\"muted\">Restart the connection from ChatGPT.</p>", 400);
