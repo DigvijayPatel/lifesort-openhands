@@ -590,6 +590,7 @@ function createServer() {
   );
 
   server.registerTool("openhands_account", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -609,6 +610,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_list_conversations", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -631,6 +633,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_start_lifesort_task", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -660,6 +663,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_start_task", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -673,6 +677,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_conversation", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -686,6 +691,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_send_message", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -709,6 +715,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_get_events", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -733,6 +740,7 @@ function createServer() {
   }
 
   server.registerTool("openhands_pause_conversation", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -745,6 +753,7 @@ function createServer() {
   });
 
   server.registerTool("openhands_resume_conversation", {
+    _meta: { securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }] },
     scopeChallenge: ({ authInfo }) =>
       authInfo?.scopes.includes(CONTROL_SCOPE)
         ? undefined
@@ -754,32 +763,6 @@ function createServer() {
   }, async ({ conversation_id }) => {
     assertOwner();
     return jsonText(await sandboxAction(conversation_id, "resume"));
-  });
-
-  // Emit OpenAI's per-tool OAuth metadata at the MCP wire boundary.
-  // The installed MCP SDK exposes scopeChallenge but not securitySchemes in
-  // registerTool's config type, so add the OpenAI extension to tools/list here.
-  const protocolWithMiddleware = server.server as unknown as {
-    use(
-      method: string,
-      middleware: (
-        request: unknown,
-        context: unknown,
-        next: (request: unknown, context: unknown) => Promise<unknown>,
-      ) => unknown,
-    ): unknown;
-  };
-  protocolWithMiddleware.use("tools/list", async (request, context, next) => {
-    const result = await next(request, context);
-    const listing = result as { tools?: Array<Record<string, unknown>> };
-    if (!Array.isArray(listing?.tools)) return result;
-    return {
-      ...listing,
-      tools: listing.tools.map((tool) => ({
-        ...tool,
-        securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
-      })),
-    };
   });
 
   return server;
