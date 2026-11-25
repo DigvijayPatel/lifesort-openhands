@@ -87,7 +87,7 @@ async function validSession(request: Request, env: Env): Promise<boolean> {
   const parts = token.split(".");
   const expiry = parts[0];
   const signature = parts[1];
-  if (!expiry || !signature || !/^\\d+$/.test(expiry) || Number(expiry) < Date.now()) return false;
+  if (!expiry || !signature || !/^\d+$/.test(expiry) || Number(expiry) < Date.now()) return false;
   const expected = await sign(expiry, env.SESSION_SIGNING_SECRET);
   const a = new TextEncoder().encode(signature);
   const b = new TextEncoder().encode(expected);
