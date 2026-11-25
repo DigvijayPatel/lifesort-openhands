@@ -2,6 +2,7 @@ import { OAuthProvider, AuthorizationError, type AuthRequest } from "@cloudflare
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
+import { env as workerEnv } from "cloudflare:workers";
 
 interface Env {
   OAUTH_KV: KVNamespace;
@@ -121,7 +122,8 @@ async function oh(env: Env, path: string, init: RequestInit = {}): Promise<unkno
 }
 function jsonText(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] }; }
 
-function createServer(env: Env) {
+function createServer() {
+  const env = workerEnv as unknown as Env;
   const server = new McpServer({ name: "LifeSort OpenHands Control", version: "0.1.0" });
   server.registerTool("openhands_account", { description: "Verify the configured OpenHands Cloud API key and show the authenticated account.", inputSchema: {} }, async () => jsonText(await oh(env, "/users/me")));
   server.registerTool("openhands_list_conversations", { description: "List recent OpenHands Cloud conversations. Results are restricted to the LifeSort repository.", inputSchema: { limit: z.number().int().min(1).max(50).default(10) } }, async ({ limit }) => {
@@ -169,7 +171,7 @@ function createServer(env: Env) {
   return server;
 }
 
-const mcpHandler = createMcpHandler((env: Env) => createServer(env));
+const mcpHandler = createMcpHandler(createServer);
 
 const apiHandler = {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -191,4 +193,5 @@ export default new OAuthProvider<Env>({
   scopesSupported: ["openhands:control"],
   requiredScopes: ["openhands:control"],
   clientIdMetadataDocumentEnabled: true,
+  resourceMetadata: { resource: "https://lifesort-openhands.digvijay-j-patel.workers.dev/mcp" },
 });
