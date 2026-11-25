@@ -108,7 +108,7 @@ async function validCsrfToken(token: string, purpose: "login" | "authorize", env
   const expiry = parts[0];
   const nonce = parts[1];
   const signature = parts[2];
-  if (!expiry || !nonce || !signature || !/^\\d+$/.test(expiry)) return false;
+  if (!expiry || !nonce || !signature || !/^\d+$/.test(expiry)) return false;
   const expiresAt = Number(expiry);
   if (expiresAt < Date.now() || expiresAt > Date.now() + 16 * 60 * 1000) return false;
   const expected = await sign(purpose + "." + expiry + "." + nonce, env.SESSION_SIGNING_SECRET);
