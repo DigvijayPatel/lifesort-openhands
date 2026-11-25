@@ -89,21 +89,29 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
     return html(`<h2>LifeSort OpenHands Control</h2><p class="muted">Sign in to authorize ChatGPT to operate your OpenHands conversations for the LifeSort repository.</p><form method="post" action="/login"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><label for="password">Bridge password</label><input id="password" name="password" type="password" required autocomplete="current-password"><button type="submit">Continue</button></form>`);
   }
 
-  const provider = (env as Env & { OAUTH_PROVIDER: { lookupClient(id: string): Promise<{ clientName?: string } | null>; completeAuthorization(args: unknown): Promise<{ redirectTo: string }> } }).OAUTH_PROVIDER;
-  const client = await provider.lookupClient(oauthRequest.clientId);
-  if (!client) return html("<h2>Unknown OAuth client</h2>", 400);
-  const returnTo = safeReturnTo(url.pathname + url.search);
+  const provider = (env as any).OAUTH_PROVIDER;
+  const details = await provider.describeConsent(oauthRequest);
   if (request.method === "GET") {
-    return html(`<h2>Authorize ChatGPT?</h2><p class="muted">Client: ${escapeHtml(client.clientName ?? "MCP client")}</p><p>This grants access to control OpenHands conversations in <strong>${REPOSITORY}</strong>. It can start tasks, read events, send instructions, and pause or resume sandboxes.</p><form method="post" action="${escapeHtml(returnTo)}"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><button type="submit">Approve access</button></form><p class="muted">You can revoke this connection from ChatGPT's connected apps.</p>`);
+    const consent = await provider.beginConsent(oauthRequest);
+    consent.headers.set("Content-Type", "text/html; charset=utf-8");
+    consent.headers.set("Cache-Control", "no-store");
+    const scope = oauthRequest.scope.filter((value: string) => value === "openhands:control");
+    return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize LifeSort OpenHands</title></head><body><main><h2>Authorize ChatGPT?</h2><p>Client: ${escapeHtml(details.clientName ?? "MCP client")}</p><p>Redirect destination: ${escapeHtml(details.redirectUriHostname ?? "verified client")}</p><p>This grants access to control OpenHands conversations in <strong>${REPOSITORY}</strong>, including starting tasks, reading events, sending instructions, and pausing or resuming sandboxes.</p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${escapeHtml(consent.handle)}">${scope.map((value: string) => `<input type="hidden" name="scope" value="${escapeHtml(value)}">`).join("")}<button name="decision" value="approve" type="submit">Approve access</button><button name="decision" value="deny" type="submit">Deny</button></form><p>You can revoke this connection from ChatGPT's connected apps.</p></main></body></html>`, { headers: consent.headers });
   }
   const form = await request.formData();
-  if (String(form.get("return_to") ?? "") !== returnTo) return html("<h2>Invalid authorization request</h2>", 400);
+  const handle = String(form.get("handle") ?? "");
+  if (String(form.get("decision") ?? "") !== "approve") {
+    const denied = await provider.denyConsent(request, handle);
+    return new Response(null, { status: 302, headers: denied.headers });
+  }
+  const approved = await provider.approveConsent(request, handle, { scope: form.getAll("scope").map(String) });
   const { redirectTo } = await provider.completeAuthorization({
-    request: oauthRequest, userId: "lifesort-owner", metadata: { clientName: client.clientName ?? "MCP client" },
-    scope: oauthRequest.scope.filter((scope: string) => scope === "openhands:control"),
+    request: approved.request, userId: "lifesort-owner", metadata: { clientName: details.clientName ?? "MCP client" },
+    scope: approved.request.scope.filter((value: string) => value === "openhands:control"),
     props: { userId: "lifesort-owner", repository: REPOSITORY }
   });
-  return Response.redirect(redirectTo, 302);
+  approved.headers.set("Location", redirectTo);
+  return new Response(null, { status: 302, headers: approved.headers });
 }
 
 function escapeHtml(value: string): string {
