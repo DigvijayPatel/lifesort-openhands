@@ -464,9 +464,19 @@ function createServer() {
   // Emit OpenAI's per-tool OAuth metadata at the MCP wire boundary.
   // The installed MCP SDK exposes scopeChallenge but not securitySchemes in
   // registerTool's config type, so add the OpenAI extension to tools/list here.
-  server.server.use("tools/list", async (request, context, next) => {
+  const protocolWithMiddleware = server.server as unknown as {
+    use(
+      method: string,
+      middleware: (
+        request: unknown,
+        context: unknown,
+        next: (request: unknown, context: unknown) => Promise<unknown>,
+      ) => unknown,
+    ): unknown;
+  };
+  protocolWithMiddleware.use("tools/list", async (request, context, next) => {
     const result = await next(request, context);
-    const listing = result as unknown as { tools?: Array<Record<string, unknown>> };
+    const listing = result as { tools?: Array<Record<string, unknown>> };
     if (!Array.isArray(listing?.tools)) return result;
     return {
       ...listing,
@@ -474,7 +484,7 @@ function createServer() {
         ...tool,
         securitySchemes: [{ type: "oauth2", scopes: [CONTROL_SCOPE] }],
       })),
-    } as typeof result;
+    };
   });
 
   return server;
