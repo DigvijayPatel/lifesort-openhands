@@ -244,13 +244,14 @@ async function consentHandleKey(handle: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function replayConsentRedirect(redirectTo: string, cookieName: string): Response {
-  const headers = new Headers({
-    location: redirectTo,
-    "cache-control": "no-store",
-    "set-cookie": cookieName + "=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
-  });
-  return new Response(null, { status: 302, headers });
+function replayConsentRedirect(redirectTo: string, cookieName: string, extraHeaders?: HeadersInit): Response {
+  const headers = extraHeaders instanceof Headers ? extraHeaders : new Headers(extraHeaders);
+  if (!headers.has("set-cookie")) {
+    headers.set("set-cookie", cookieName + "=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0");
+  }
+  const target = escapeHtml(redirectTo);
+  const body = "<meta http-equiv=\"refresh\" content=\"0;url=" + target + "\"><h2>Authorization approved</h2><p class=\"muted\">Your OpenHands connection has been approved. Returning to ChatGPT…</p><p><a id=\"oauth-return\" href=\"" + target + "\">Continue to ChatGPT</a></p><script>window.location.replace(document.getElementById(\"oauth-return\").href)</script>";
+  return page(body, 200, headers);
 }
 
 async function createSession(env: Env): Promise<string> {
@@ -409,10 +410,7 @@ async function authorizeHandler(request: Request, env: Env): Promise<Response> {
         props: { userId: OWNER_ID, repository: REPOSITORY },
       });
       await coordinator.complete(replayKey, completed.redirectTo);
-      const headers = new Headers(approved.headers);
-      headers.set("location", completed.redirectTo);
-      headers.set("cache-control", "no-store");
-      return new Response(null, { status: 302, headers });
+      return replayConsentRedirect(completed.redirectTo, csrf.binding.name, approved.headers);
     } catch (error) {
       try { await coordinator.fail(replayKey); } catch { /* preserve the original OAuth error */ }
       if (error instanceof AuthorizationError) return oauthErrorResponse(error);
