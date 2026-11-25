@@ -1,10 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "lifesort-openhands-control",
+  "name": "lifesort-openhands",
   "main": "src/index.ts",
-  "compatibility_date": "2026-11-26",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2026-11-25",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "kv_namespaces": [
-    { "binding": "OAUTH_KV", "id": "7a43344a18b14e4b8b5f8f04d353ab84" }
+    {
+      "binding": "OAUTH_KV",
+      "id": "7a43344a18b14e4b8b5f8f04d353ab84"
+    }
   ]
 }
