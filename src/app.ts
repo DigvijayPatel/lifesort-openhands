@@ -126,8 +126,8 @@ export function renderAppPage(csrfToken: string): string {
 <script>
 (function(){
 "use strict";
-var activeView="home", conversations=[], selectedId=null, selectedConversation=null, startTaskId=null, toastTimer=null;
-var pageTitles={home:"Your workspace.",conversations:"Conversations.",start:"Create momentum."};
+var activeView="home", conversations=[], selectedId=null, selectedConversation=null, startTaskId=null, startPollTimer=null, startPollCount=0, pollingStart=false, toastTimer=null;
+var pageTitles={home:"Your workspace.",conversations:"Your work.",start:"Start with a clear brief."};
 var $=function(id){return document.getElementById(id);};
 var esc=function(value){return String(value==null?"":value).replace(/[&<>"']/g,function(ch){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch];});};
 var when=function(value){if(!value)return "Updated date unavailable";var d=new Date(value);return isNaN(d.getTime())?String(value):d.toLocaleString([], {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"});};
@@ -184,17 +184,103 @@ async function openConversation(id){
 }
 async function changeSandbox(id,action){var label=action==="pause"?"pause":"resume";if(!confirm("Are you sure you want to "+label+" this OpenHands sandbox?"))return;try{await request("/api/conversations/"+encodeURIComponent(id)+"/"+action,{method:"POST",body:{}});toast("Sandbox "+(action==="pause"?"paused":"resumed")+".");await loadConversations();await openConversation(id);}catch(e){toast(e.message,true);}}
 async function sendFollowup(e){e.preventDefault();var message=$("followup-message").value.trim();if(!message||!selectedId)return;var button=e.submitter||e.target.querySelector("button[type=submit]");button.disabled=true;button.innerHTML='<span class="spinner"></span> Sending';try{await request("/api/conversations/"+encodeURIComponent(selectedId)+"/messages",{method:"POST",body:{message:message}});$("followup-message").value="";toast("Follow-up sent to OpenHands.");await openConversation(selectedId);}catch(err){toast(err.message,true);}finally{if(button){button.disabled=false;button.textContent="Send message ↗";}}}
-function findStartTaskId(value){if(!value||typeof value!=="object")return null;var keys=["start_task_id","startTaskId"];for(var i=0;i<keys.length;i++){if(typeof value[keys[i]]==="string")return value[keys[i]];}if(value.result){var found=findStartTaskId(value.result);if(found)return found;}if(value.data){var nested=findStartTaskId(value.data);if(nested)return nested;}return null;}
-async function pollStartTask(){
- if(!startTaskId)return;try{var d=await request("/api/start-tasks/"+encodeURIComponent(startTaskId));$("task-result").textContent=JSON.stringify(d,null,2);var row=(d.tasks||d.start_tasks||d.data||[]);var status="PENDING";var first=Array.isArray(row)?row[0]:row;if(first&&typeof first==="object")status=String(first.status||first.state||first.execution_status||status).toUpperCase();$("task-progress-status").textContent=status;$("task-progress-message").textContent="Startup status refreshed. Check the conversations page for the new sandbox.";if(/COMPLET|SUCCESS|RUNNING|FAILED|ERROR/.test(status))loadConversations();}catch(e){$("task-progress-message").textContent=e.message;toast(e.message,true);}
+function findStartTaskId(value){
+ if(!value||typeof value!=="object")return null;
+ var keys=["start_task_id","startTaskId"];
+ for(var i=0;i<keys.length;i++){if(typeof value[keys[i]]==="string")return value[keys[i]];}
+ if(typeof value.id==="string"&&value.status&&("created_by_user_id" in value||"request" in value))return value.id;
+ if(value.result){var found=findStartTaskId(value.result);if(found)return found;}
+ if(value.data){var nested=findStartTaskId(value.data);if(nested)return nested;}
+ return null;
 }
+function startItemFromResponse(d){
+ var row=d&&(d.tasks||d.start_tasks||d.data||d.result||d);
+ if(Array.isArray(row))return row[0]||null;
+ if(row&&Array.isArray(row.items))return row.items[0]||null;
+ return row&&typeof row==="object"?row:null;
+}
+function startConversationId(item){
+ if(!item)return null;
+ return item.app_conversation_id||item.conversation_id||item.conversationId||(item.request&&(item.request.conversation_id||item.request.app_conversation_id))||null;
+}
+function setProgressState(status,ready,failed){
+ $("task-progress-status").textContent=status;
+ $("task-progress-status").className="status "+(ready?"running":failed?"failed":"paused");
+ $("step-submitted").className="progress-step done";
+ $("step-preparing").className="progress-step"+(ready?" done":failed?"":" active");
+ $("step-ready").className="progress-step"+(ready?" done":"");
+}
+async function pollStartTask(){
+ if(!startTaskId||pollingStart)return;
+ pollingStart=true;
+ try{
+  var d=await request("/api/start-tasks/"+encodeURIComponent(startTaskId));
+  var first=startItemFromResponse(d);
+  var status=String((first&&(first.status||first.state||first.execution_status))||"WORKING").toUpperCase();
+  var conversationId=startConversationId(first);
+  var failed=/FAIL|ERROR|CANCEL/.test(status);
+  var ready=!!conversationId||/COMPLETE|SUCCESS|READY|RUNNING/.test(status);
+  setProgressState(failed?"FAILED":ready?"READY":"SETTING UP",ready,failed);
+  if(failed){
+   $("task-progress-message").textContent=(first&&(first.detail||first.message||first.error))||"OpenHands could not finish setting up this task. Check the status and try again.";
+   $("task-open-link").hidden=true;
+  }else if(ready){
+   $("task-progress-message").textContent="Your sandbox is ready. Open the conversation to follow the agent's work, review events and send follow-up instructions.";
+   if(conversationId){
+    $("task-open-link").href="https://app.all-hands.dev/canvas/conversations/"+encodeURIComponent(conversationId);
+    $("task-open-link").hidden=false;
+   }
+   loadConversations();
+  }else{
+   $("task-progress-message").textContent="OpenHands has received your task and is preparing the sandbox. You can stay here or check your task list.";
+   $("task-open-link").hidden=true;
+  }
+  $("task-meta").textContent="Task reference: "+startTaskId.slice(0,8)+"… · Status checked "+new Date().toLocaleTimeString([], {hour:"numeric",minute:"2-digit"});
+  if(!ready&&!failed&&startPollCount<30){
+   startPollCount++;
+   clearTimeout(startPollTimer);
+   startPollTimer=setTimeout(pollStartTask,3000);
+  }else if(!ready&&!failed){
+   $("task-progress-message").textContent="Your request is still being prepared. Use Check progress to refresh its latest status.";
+  }
+ }catch(e){
+  $("task-progress-message").textContent="We couldn't refresh the startup status: "+e.message;
+  toast(e.message,true);
+ }finally{pollingStart=false;}
+}
+document.querySelectorAll("[data-example]").forEach(function(el){el.addEventListener("click",function(){$("task-instructions").value=el.getAttribute("data-example")||"";$("task-instructions").focus();});});
+$("use-example").addEventListener("click",function(){$("task-instructions").value="Inspect the task creation flow. Find why new tasks sometimes remain in a pending state, identify the root cause, add a regression test, and implement a safe fix. Run the relevant checks and summarise the change.";$("task-instructions").focus();});
+$("start-form").addEventListener("reset",function(){clearTimeout(startPollTimer);startTaskId=null;$("task-progress").style.display="none";});
 $("start-form").addEventListener("submit",async function(e){
- e.preventDefault();var instructions=$("task-instructions").value.trim();if(instructions.length<10){toast("Please enter at least 10 characters of instructions.",true);return;}if(!$("task-confirm").checked){toast("Confirm sandbox creation before starting.",true);return;}
- if(!confirm("Start this task in DigvijayPatel/LifeSort? This creates an OpenHands sandbox and may consume account resources."))return;
- var button=$("start-submit");button.disabled=true;button.innerHTML='<span class="spinner"></span> Starting…';$("task-progress").style.display="block";$("task-progress-status").textContent="SUBMITTING";$("task-progress-message").textContent="Sending instructions to OpenHands…";$("task-result").textContent="";
- try{var body={task:instructions};var title=$("task-title").value.trim();var branch=$("task-branch").value.trim();if(title)body.title=title;if(branch)body.branch=branch;var result=await request("/api/tasks/start",{method:"POST",body:body});startTaskId=findStartTaskId(result);$("task-result").textContent=JSON.stringify(result,null,2);$("task-progress-status").textContent=startTaskId?"STARTING":"SUBMITTED";$("task-progress-message").textContent=startTaskId?"OpenHands accepted the task. Polling its startup status…":"OpenHands accepted the request. Refresh Conversations to find the created task.";toast("Task submitted to OpenHands.");loadConversations();if(startTaskId){pollStartTask();}else{setTimeout(loadConversations,5000);}}catch(err){$("task-progress-status").textContent="FAILED";$("task-progress-message").textContent=err.message;toast(err.message,true);}finally{button.disabled=false;button.textContent="Start task ↗";}
+ e.preventDefault();
+ var instructions=$("task-instructions").value.trim();
+ if(instructions.length<10){toast("Please enter at least 10 characters of instructions.",true);return;}
+ var button=$("start-submit");
+ button.disabled=true;button.innerHTML='<span class="spinner"></span> Starting…';
+ $("task-progress").style.display="block";
+ $("task-progress-status").textContent="SUBMITTING";
+ $("task-progress-message").textContent="Sending your brief to OpenHands…";
+ $("task-meta").textContent="";$("task-open-link").hidden=true;
+ $("step-submitted").className="progress-step done";$("step-preparing").className="progress-step active";$("step-ready").className="progress-step";
+ startPollCount=0;clearTimeout(startPollTimer);
+ try{
+  var body={task:instructions};
+  var title=$("task-title").value.trim();var branch=$("task-branch").value.trim();
+  if(title)body.title=title;if(branch)body.branch=branch;
+  var result=await request("/api/tasks/start",{method:"POST",body:body});
+  startTaskId=findStartTaskId(result);
+  if(!startTaskId&&result.result&&typeof result.result.id==="string")startTaskId=result.result.id;
+  setProgressState("STARTING",false,false);
+  $("task-progress-message").textContent="OpenHands accepted your brief. It is now preparing a sandbox for this task.";
+  toast("Task sent to OpenHands.");loadConversations();
+  if(startTaskId){$("task-meta").textContent="Task reference: "+startTaskId.slice(0,8)+"… · Waiting for setup status";pollStartTask();}
+  else{$("task-meta").textContent="Your task was accepted. Check Conversations in a moment to see its progress.";setTimeout(loadConversations,4000);}
+ }catch(err){
+  setProgressState("FAILED",false,true);
+  $("task-progress-message").textContent=err.message;toast(err.message,true);
+ }finally{button.disabled=false;button.textContent="Start working ↗";}
 });
-$("task-refresh").addEventListener("click",pollStartTask);
+$("task-refresh").addEventListener("click",function(){clearTimeout(startPollTimer);pollStartTask();});
 $("refresh-list").addEventListener("click",loadConversations);
 $("conversation-search").addEventListener("input",renderLists);
 $("logout").addEventListener("click",async function(){if(!confirm("Sign out of the LifeSort control centre?"))return;try{await request("/api/logout",{method:"POST",body:{}});}catch(e){}location.href="/app";});
