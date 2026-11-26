@@ -6,6 +6,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
+import { renderAppPage } from "./app";
 import { DurableObject, env as workerEnv } from "cloudflare:workers";
 
 interface Env {
@@ -115,7 +116,7 @@ function escapeHtml(value: string): string {
 }
 
 function safeReturnTo(value: string): string {
-  if ((value !== "/diagnostics" && !value.startsWith("/authorize?")) || value.startsWith("//") || value.includes("\\") || value.includes("\r") || value.includes("\n")) {
+  if ((value !== "/diagnostics" && value !== "/app" && !value.startsWith("/authorize?")) || value.startsWith("//") || value.includes("\\") || value.includes("\r") || value.includes("\n")) {
     return "/authorize";
   }
   return value;
@@ -261,7 +262,7 @@ async function createSession(env: Env): Promise<string> {
 
 async function loginPage(returnTo: string, env: Env, status = 200): Promise<Response> {
   const csrfToken = await createCsrfToken(env, "login");
-  const body = "<h2>LifeSort OpenHands Control</h2><p class=\"muted\">Sign in to authorize ChatGPT to access your OpenHands account for <strong>" + REPOSITORY + "</strong>.</p><form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"_csrf\" value=\"" + escapeHtml(csrfToken) + "\"><input type=\"hidden\" name=\"return_to\" value=\"" + escapeHtml(returnTo) + "\"><label for=\"password\">Bridge password</label><input id=\"password\" name=\"password\" type=\"password\" required autocomplete=\"current-password\"><button type=\"submit\">Continue</button></form>";
+  const body = "<h2>LifeSort Control Centre</h2><p class=\"muted\">Sign in to manage OpenHands tasks in <strong>" + REPOSITORY + "</strong>. Your API credentials remain on the server.</p><form method=\"post\" action=\"/login\"><input type=\"hidden\" name=\"_csrf\" value=\"" + escapeHtml(csrfToken) + "\"><input type=\"hidden\" name=\"return_to\" value=\"" + escapeHtml(returnTo) + "\"><label for=\"password\">Bridge password</label><input id=\"password\" name=\"password\" type=\"password\" required autocomplete=\"current-password\"><button type=\"submit\">Continue</button></form>";
   return page(body, status);
 }
 
@@ -279,6 +280,51 @@ function oauthErrorResponse(error: AuthorizationError): Response {
 
 async function authorizeHandler(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
+
+  if (url.pathname === "/" && request.method === "GET") {
+    return Response.redirect(new URL("/app", url.origin), 302);
+  }
+
+  if (url.pathname === "/manifest.webmanifest" && request.method === "GET") {
+    return new Response(JSON.stringify({
+      name: "LifeSort Command Centre",
+      short_name: "LifeSort",
+      description: "Private OpenHands task and conversation control",
+      start_url: "/app",
+      scope: "/",
+      display: "standalone",
+      background_color: "#0b0d10",
+      theme_color: "#0b0d10",
+      icons: [{ src: "/app-icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+    }), { headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" } });
+  }
+
+  if (url.pathname === "/app-icon.svg" && request.method === "GET") {
+    return new Response('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#d9ff5a"/><path d="M150 110h73v223h145v69H150z" fill="#0b0d10"/><circle cx="358" cy="144" r="30" fill="#0b0d10"/></svg>', { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" } });
+  }
+
+  if (url.pathname === "/sw.js" && request.method === "GET") {
+    const workerScript = 'self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(self.clients.claim())});self.addEventListener("fetch",function(e){var u=new URL(e.request.url);if(u.origin!==self.location.origin||e.request.method!=="GET"||u.pathname.startsWith("/api/")||u.pathname==="/mcp"||u.pathname==="/login"||u.pathname==="/authorize")return;});';
+    return new Response(workerScript, { headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache", "service-worker-allowed": "/" } });
+  }
+
+  if (url.pathname === "/app" && request.method === "GET") {
+    if (!(await validSession(request, env))) return loginPage("/app", env);
+    const csrfToken = await createCsrfToken(env, "login");
+    return new Response(renderAppPage(csrfToken), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "same-origin",
+        "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      },
+    });
+  }
+
+  if (url.pathname.startsWith("/api/")) {
+    return appApiHandler(request, env, url);
+  }
 
   if (url.pathname === "/healthz" && request.method === "GET") {
     return Response.json({
@@ -630,6 +676,121 @@ function conversationSummary(item: any) {
     conversation_url: item.conversation_ui_url ??
       (OPENHANDS_WEB_BASE + "/canvas/conversations/" + encodeURIComponent(id)),
   };
+}
+
+
+async function appApiHandler(request: Request, env: Env, url: URL): Promise<Response> {
+  const json = (value: unknown, status = 200) =>
+    Response.json(value, { status, headers: { "cache-control": "no-store" } });
+  if (!(await validSession(request, env))) return json({ error: "Your session has expired. Sign in again." }, 401);
+
+  if (request.method === "GET" && url.pathname === "/api/csrf") {
+    return json({ csrf: await createCsrfToken(env, "login") });
+  }
+
+  if (request.method !== "GET") {
+    if (!sameOrigin(request)) return json({ error: "Cross-origin request rejected." }, 403);
+    const csrf = await validCsrfToken(request.headers.get("x-lifesort-csrf") ?? "", "login", env);
+    if (!csrf.valid) return json({ error: "Request verification expired. Refresh and retry." }, 403);
+  }
+
+  try {
+    if (request.method === "GET" && url.pathname === "/api/account") {
+      const data = await oh(env, "/users/me") as any;
+      const user = data?.user ?? data;
+      return json({
+        id: typeof user?.id === "string" ? user.id : "",
+        name: String(user?.name ?? user?.username ?? "OpenHands account"),
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/conversations") {
+      const rawLimit = Number(url.searchParams.get("limit") ?? "50");
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(50, Math.floor(rawLimit))) : 50;
+      const data = await oh(env, "/app-conversations/search?limit=" + limit);
+      const items = arrayFromResponse(data, "conversation search");
+      const conversations = items.filter(isLifeSortConversation).map(conversationSummary);
+      return json({ count: conversations.length, conversations });
+    }
+
+    const startTaskMatch = url.pathname.match(/^\/api\/start-tasks\/([0-9a-f-]{36})$/i);
+    if (request.method === "GET" && startTaskMatch) {
+      const data = await oh(env, "/app-conversations/start-tasks?ids=" + encodeURIComponent(startTaskMatch[1]));
+      return json({ data: arrayFromResponse(data, "start-task lookup") });
+    }
+
+    const conversationMatch = url.pathname.match(/^\/api\/conversations\/([0-9a-f-]{36})(?:\/(events|messages|pause|resume))?$/i);
+    if (conversationMatch) {
+      const conversationId = conversationMatch[1];
+      const action = conversationMatch[2] ?? "";
+      if (request.method === "GET" && action === "") {
+        const item = await getLifeSortConversation(env, conversationId);
+        return json({ conversation: conversationSummary(item) });
+      }
+      if (request.method === "GET" && action === "events") {
+        await getLifeSortConversation(env, conversationId);
+        const rawLimit = Number(url.searchParams.get("limit") ?? "40");
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(MAX_EVENTS, Math.floor(rawLimit))) : 40;
+        return json({ events: await oh(env, "/conversation/" + encodeURIComponent(conversationId) + "/events/search?limit=" + limit) });
+      }
+      if (request.method === "POST" && action === "messages") {
+        const body = await request.json() as { message?: unknown };
+        const message = typeof body.message === "string" ? body.message.trim() : "";
+        if (!message || message.length > 12000) return json({ error: "Message must contain 1 to 12,000 characters." }, 400);
+        const conversation = await getLifeSortConversation(env, conversationId);
+        const state = String(conversation.sandbox_status ?? "") + " " + String(conversation.execution_status ?? "");
+        if (/pause|stop|fail|complete|terminated/i.test(state)) {
+          return json({ error: "This sandbox is not running. Resume it before sending a follow-up." }, 409);
+        }
+        const result = await oh(env, "/app-conversations/" + encodeURIComponent(conversationId) + "/send-message", {
+          method: "POST",
+          body: JSON.stringify({ role: "user", content: [{ type: "text", text: message }], run: true }),
+        });
+        return json({ ok: true, result });
+      }
+      if (request.method === "POST" && (action === "pause" || action === "resume")) {
+        const item = await getLifeSortConversation(env, conversationId);
+        const sandboxId = item.sandbox_id ?? item.sandbox?.id;
+        if (typeof sandboxId !== "string" || !sandboxId) return json({ error: "No sandbox ID is available for this conversation." }, 409);
+        const result = await oh(env, "/sandboxes/" + encodeURIComponent(sandboxId) + "/" + action, { method: "POST" });
+        return json({ ok: true, result });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/tasks/start") {
+      const body = await request.json() as { task?: unknown; title?: unknown; branch?: unknown };
+      const task = typeof body.task === "string" ? body.task.trim() : "";
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      const branch = typeof body.branch === "string" ? body.branch.trim() : "";
+      if (task.length < 10 || task.length > 12000) return json({ error: "Task instructions must contain 10 to 12,000 characters." }, 400);
+      if (title.length > 120 || branch.length > 120) return json({ error: "Title and branch must be 120 characters or fewer." }, 400);
+      const payload: Record<string, unknown> = {
+        selected_repository: REPOSITORY,
+        initial_message: { role: "user", content: [{ type: "text", text: task }], run: true },
+      };
+      if (title) payload.title = title;
+      if (branch) payload.selected_branch = branch;
+      const result = await oh(env, "/app-conversations", { method: "POST", body: JSON.stringify(payload) });
+      return json({ ok: true, result }, 201);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/logout") {
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+          "set-cookie": SESSION_COOKIE + "=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        },
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const statusMatch = message.match(/OpenHands API (\\d{3})/);
+    console.error("[lifesort-app-api]", message.slice(0, 500));
+    return json({ error: message.slice(0, 500) }, statusMatch ? 502 : 500);
+  }
+
+  return json({ error: "Not found" }, 404);
 }
 
 function createServer() {
