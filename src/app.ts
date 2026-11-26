@@ -1,11 +1,11 @@
 export function renderAppPage(csrfToken: string): string {
-  return String.raw\`<!doctype html>
+  return String.raw`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d10">
-<meta name="csrf-token" content="\${csrfToken.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">
+<meta name="csrf-token" content="${csrfToken.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">
 <meta name="description" content="LifeSort private task and agent control centre">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -163,5 +163,5 @@ if("serviceWorker" in navigator&&"BeforeInstallPromptEvent" in window){window.ad
 })();
 </script>
 </body>
-</html>\`;
+</html>`;
 }
